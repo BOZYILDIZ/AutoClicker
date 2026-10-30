@@ -13,7 +13,12 @@ Autoclicker et anti-AFK pour Windows, avec une interface sombre inspirée de mac
 
 **Anti-AFK**
 - Agit toutes les X secondes / minutes pour éviter d'être kick
-- Actions : petit mouvement de souris, clic, Espace, avancer (Z/W) ou souris + Espace
+- Actions : petit mouvement de souris, clic, Espace, avancer (Z/W), souris + Espace ou **Clavier**
+- **Clavier** : un clavier complet s'affiche à côté, tu cliques sur la ou les touches à appuyer
+  - une seule touche ou plusieurs à la suite (appuyées dans l'ordre des numéros)
+  - claviers Windows et Mac, en AZERTY, QWERTY ou QWERTZ
+  - durée d'appui de chaque touche et temps entre chaque touche réglables
+- Arrêt automatique après X minutes / heures (ou jamais)
 - Choix du clavier : AZERTY, QWERTY, QWERTZ (détecté automatiquement)
 - Option « seulement si je suis inactif » : se met en pause tout seul quand tu joues
 
