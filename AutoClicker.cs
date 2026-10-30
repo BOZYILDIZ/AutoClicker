@@ -1120,6 +1120,9 @@ namespace AutoClicker
             // ---- trajet ----
             { "Enregistrement du trajet  ·  F9 pour finir", new[] { "Recording route  ·  F9 to finish", "Rota kaydediliyor  ·  bitirmek için F9" } },
             { "Enregistrement du trajet  ·  F9", new[] { "Recording route  ·  F9", "Rota kaydediliyor  ·  F9" } },
+            { "Aucune touche n'a été enregistrée, seulement la souris : le perso tournera sur place sans avancer.",
+              new[] { "No key was recorded, only the mouse: the character will turn on the spot without moving.",
+                      "Hiçbir tuş kaydedilmedi, sadece fare: karakter ilerlemeden yerinde dönecek." } },
             { "Trajet trop court, ancien trajet conservé", new[] { "Route too short, previous route kept", "Rota çok kısa, eski rota korundu" } },
             { "Trajet enregistré  ·  {0}", new[] { "Route saved  ·  {0}", "Rota kaydedildi  ·  {0}" } },
             { "enregistrement… {0}  ·  F9", new[] { "recording… {0}  ·  F9", "kaydediliyor… {0}  ·  F9" } },
@@ -1265,6 +1268,8 @@ namespace AutoClicker
         const int HK_TOGGLE = 1, HK_POS = 2, HK_ROUTE = 3;
         const uint VK_F6 = 0x75, VK_F7 = 0x76, VK_F9 = 0x78;
         const int WM_INPUT = 0x00FF;
+        // marque mise sur nos propres SendInput, pour les reconnaître dans le Raw Input
+        const uint OwnInput = 0x424F5A;   // "BOZ"
 
         // ---- Raw Input (enregistrement du trajet) ----
         [DllImport("user32.dll")] static extern bool RegisterRawInputDevices(RAWINPUTDEVICE[] devices, uint count, uint size);
@@ -1855,7 +1860,9 @@ namespace AutoClicker
             route = recRoute;
             route.Save();
             chkRoute.Checked = true;
-            if (chkToast.Checked) toast.ShowToast(T("Trajet enregistré  ·  {0}", Clock(end)), Theme.Green);
+            if (!recRoute.Events.Exists(e => e.Kind == Route.KeyDown))   // seulement la souris : le perso ne bougera pas
+                MessageBox.Show(this, T("Aucune touche n'a été enregistrée, seulement la souris : le perso tournera sur place sans avancer."), AppName);
+            else if (chkToast.Checked) toast.ShowToast(T("Trajet enregistré  ·  {0}", Clock(end)), Theme.Green);
             UpdateRouteLabel();
         }
 
@@ -1883,13 +1890,14 @@ namespace AutoClicker
             if (GetRawInputData(hRaw, RID_INPUT, buf, ref size, hdr) != size) return;
 
             uint type = BitConverter.ToUInt32(buf, 0);
-            long device = IntPtr.Size == 8 ? BitConverter.ToInt64(buf, 8) : BitConverter.ToInt32(buf, 8);
-            if (device == 0) return;   // entrée simulée (SendInput) : pas une action du joueur
             int o = (int)hdr, t = Environment.TickCount - recStart;
             var ev = recRoute.Events;
 
-            if (type == 0 && size >= o + 20)   // RIM_TYPEMOUSE
+            // On n'ignore que nos propres entrées simulées : celles des claviers / souris gaming passent souvent
+            // par un logiciel (Razer, Logitech G Hub, iCUE, AutoHotkey…) et arrivent sans périphérique (device = 0).
+            if (type == 0 && size >= o + 24)   // RIM_TYPEMOUSE
             {
+                if (BitConverter.ToUInt32(buf, o + 20) == OwnInput) return;
                 ushort flags = BitConverter.ToUInt16(buf, o);
                 if ((flags & 1) != 0) return;   // mouvement absolu (bureau à distance, tablette) : ignoré
                 int dx = BitConverter.ToInt32(buf, o + 12), dy = BitConverter.ToInt32(buf, o + 16);
@@ -1901,8 +1909,9 @@ namespace AutoClicker
                 else
                     ev.Add(new Route.Ev(t, Route.Move, dx, dy));
             }
-            else if (type == 1 && size >= o + 4)   // RIM_TYPEKEYBOARD
+            else if (type == 1 && size >= o + 16)   // RIM_TYPEKEYBOARD
             {
+                if (BitConverter.ToUInt32(buf, o + 12) == OwnInput) return;
                 ushort make = BitConverter.ToUInt16(buf, o), kf = BitConverter.ToUInt16(buf, o + 2);
                 if (make == 0 || make == 0xFF) return;
                 int code = make | ((kf & 2) != 0 ? 0xE000 : 0);
@@ -2296,8 +2305,8 @@ namespace AutoClicker
             else { down = 0x0002; up = 0x0004; }                 // gauche
 
             var inputs = new INPUT[2];
-            inputs[0].type = 0; inputs[0].u.mi.dwFlags = down;
-            inputs[1].type = 0; inputs[1].u.mi.dwFlags = up;
+            inputs[0].type = 0; inputs[0].u.mi.dwFlags = down; inputs[0].u.mi.dwExtraInfo = (IntPtr)OwnInput;
+            inputs[1].type = 0; inputs[1].u.mi.dwFlags = up; inputs[1].u.mi.dwExtraInfo = (IntPtr)OwnInput;
             SendInput(2, inputs, Marshal.SizeOf(typeof(INPUT)));
         }
 
@@ -2316,6 +2325,7 @@ namespace AutoClicker
             inputs[0].u.mi.dx = dx;
             inputs[0].u.mi.dy = dy;
             inputs[0].u.mi.dwFlags = 0x0001; // MOUSEEVENTF_MOVE
+            inputs[0].u.mi.dwExtraInfo = (IntPtr)OwnInput;
             SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT)));
         }
 
@@ -2337,6 +2347,7 @@ namespace AutoClicker
             input[0].u.ki.dwFlags = KEYEVENTF_SCANCODE
                 | ((code & 0xE000) == 0xE000 ? KEYEVENTF_EXTENDEDKEY : 0)
                 | (up ? KEYEVENTF_KEYUP : 0);
+            input[0].u.ki.dwExtraInfo = (IntPtr)OwnInput;
             SendInput(1, input, Marshal.SizeOf(typeof(INPUT)));
         }
 
