@@ -5,6 +5,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -1116,6 +1117,24 @@ namespace AutoClicker
             { "AutoClicker actif  ·  F6", new[] { "AutoClicker on  ·  F6", "AutoClicker açık  ·  F6" } },
             { "Anti-AFK actif  ·  F6", new[] { "Anti-AFK on  ·  F6", "Anti-AFK açık  ·  F6" } },
             { "Récolte active  ·  F6", new[] { "Harvest on  ·  F6", "Hasat açık  ·  F6" } },
+
+            // ---- confiance du certificat (1er lancement) ----
+            { "Rendre AutoClicker reconnu sur ce PC ?", new[] { "Make AutoClicker trusted on this PC?", "AutoClicker bu PC'de tanınsın mı?" } },
+            { "Windows ne connaît pas encore cette application et peut l'afficher comme « éditeur inconnu ». "
+                    + "Cette étape ajoute le certificat de BOZYILDIZ pour qu'AutoClicker soit reconnu sur ce PC.\n\n"
+                    + "Windows affichera un avertissement de sécurité : choisis « Oui » pour confirmer. "
+                    + "Tu peux refuser, l'application fonctionnera quand même.",
+              new[] { "Windows doesn't know this app yet and may show it as \"unknown publisher\". "
+                    + "This step adds BOZYILDIZ's certificate so AutoClicker is trusted on this PC.\n\n"
+                    + "Windows will show a security warning: choose \"Yes\" to confirm. "
+                    + "You can decline, the app will still work.",
+                      "Windows bu uygulamayı henüz tanımıyor ve \"bilinmeyen yayımcı\" olarak gösterebilir. "
+                    + "Bu adım, AutoClicker'ın bu PC'de tanınması için BOZYILDIZ sertifikasını ekler.\n\n"
+                    + "Windows bir güvenlik uyarısı gösterecek: onaylamak için \"Evet\" seç. "
+                    + "Reddedebilirsin, uygulama yine de çalışır." } },
+            { "Ne plus me demander", new[] { "Don't ask again", "Bir daha sorma" } },
+            { "Rendre reconnu", new[] { "Make trusted", "Tanıt" } },
+            { "Plus tard", new[] { "Later", "Sonra" } },
 
             // ---- trajet ----
             { "Enregistrement du trajet  ·  F9 pour finir", new[] { "Recording route  ·  F9 to finish", "Rota kaydediliyor  ·  bitirmek için F9" } },
@@ -2356,7 +2375,263 @@ namespace AutoClicker
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            using (var s = new SplashForm()) s.ShowDialog();   // écran d'ouverture animé
+            CertTrust.MaybePrompt();                           // au 1er lancement : demande l'accord pour être reconnu
             Application.Run(new MainForm());
+        }
+    }
+
+    // =====================================================================
+    //  Écran d'ouverture animé (affiché à chaque lancement)
+    // =====================================================================
+    public class SplashForm : Form
+    {
+        readonly System.Diagnostics.Stopwatch sw = new System.Diagnostics.Stopwatch();
+        readonly System.Windows.Forms.Timer timer;
+        readonly Bitmap logo;
+        const int Win = 460, Hin = 290;
+        const int FadeIn = 320, Hold = 1480, FadeOut = 360;   // durées (ms)
+        const int Total = FadeIn + Hold + FadeOut;
+
+        public SplashForm()
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.CenterScreen;
+            Size = new Size(Win, Hin);
+            BackColor = Color.FromArgb(18, 18, 20);
+            DoubleBuffered = true;
+            Opacity = 0;
+            Region = new Region(Theme.Round(new RectangleF(0, 0, Win, Hin), 22));
+            try { logo = Icon.ExtractAssociatedIcon(Application.ExecutablePath).ToBitmap(); } catch { logo = null; }
+
+            timer = new System.Windows.Forms.Timer { Interval = 15 };
+            timer.Tick += delegate { Tick(); };
+        }
+
+        protected override bool ShowWithoutActivation { get { return true; } }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            sw.Start();
+            timer.Start();
+        }
+
+        void Tick()
+        {
+            int t = (int)sw.ElapsedMilliseconds;
+            Opacity = t < FadeIn ? (double)t / FadeIn
+                    : t > FadeIn + Hold ? Math.Max(0, 1.0 - (double)(t - FadeIn - Hold) / FadeOut)
+                    : 1;
+            if (t >= Total) { timer.Stop(); Close(); return; }
+            Invalidate();
+        }
+
+        static float EaseOut(float x) { return 1 - (float)Math.Pow(1 - x, 3); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            Theme.Hq(g);
+            int t = (int)sw.ElapsedMilliseconds;
+            var full = new RectangleF(0, 0, Win, Hin);
+
+            // fond dégradé diagonal
+            using (var bg = new LinearGradientBrush(new Rectangle(0, 0, Win, Hin),
+                        Color.FromArgb(26, 26, 30), Color.FromArgb(14, 14, 16), 60f))
+                g.FillPath(bg, Theme.Round(full, 22));
+            // liseré intérieur
+            using (var pen = new Pen(Color.FromArgb(60, 255, 255, 255)))
+                g.DrawPath(pen, Theme.Round(new RectangleF(0.5f, 0.5f, Win - 1, Hin - 1), 22));
+
+            float cx = Win / 2f, cy = 104;
+
+            // halo + anneaux pulsés derrière le logo
+            float pulse = (t % 1400) / 1400f;
+            for (int i = 0; i < 2; i++)
+            {
+                float p = (pulse + i * 0.5f) % 1f;
+                float rad = 42 + p * 46;
+                int a = (int)(110 * (1 - p));
+                using (var pen = new Pen(Color.FromArgb(a, Theme.Accent), 2f))
+                    g.DrawEllipse(pen, cx - rad, cy - rad, rad * 2, rad * 2);
+            }
+            using (var glow = new PathGradientBrush(Ellipse(cx, cy, 70)))
+            {
+                glow.CenterColor = Color.FromArgb(120, Theme.Accent);
+                glow.SurroundColors = new[] { Color.FromArgb(0, Theme.Accent) };
+                g.FillEllipse(glow, cx - 70, cy - 70, 140, 140);
+            }
+
+            // logo avec petit effet de zoom à l'entrée
+            if (logo != null)
+            {
+                float pop = EaseOut(Math.Min(1f, t / 420f));
+                float sz = 68 * (0.7f + 0.3f * pop);
+                var st = g.Save();
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.DrawImage(logo, cx - sz / 2, cy - sz / 2, sz, sz);
+                g.Restore(st);
+            }
+
+            // titre avec reflet qui balaie
+            var tr = new RectangleF(0, 168, Win, 40);
+            using (var f = new Font("Segoe UI Semibold", 25f))
+            {
+                Theme.DrawText(g, "AutoClicker", f, Theme.Text, tr, StringAlignment.Center);
+                using (var path = new GraphicsPath())
+                {
+                    var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                    path.AddString("AutoClicker", f.FontFamily, (int)FontStyle.Bold, 34, tr, sf);
+                    float shine = ((t % 1600) / 1600f) * (Win + 200) - 100;
+                    var st = g.Save();
+                    g.SetClip(path);
+                    using (var sb = new LinearGradientBrush(new RectangleF(shine - 60, 160, 120, 56),
+                                Color.FromArgb(0, 255, 255, 255), Color.FromArgb(170, 255, 255, 255), 0f))
+                        g.FillRectangle(sb, shine - 60, 160, 120, 56);
+                    g.Restore(st);
+                }
+            }
+            using (var f = new Font("Segoe UI", 10.5f))
+                Theme.DrawText(g, "by BOZYILDIZ", f, Theme.Accent, new RectangleF(0, 206, Win, 22), StringAlignment.Center);
+
+            // barre de progression
+            float bw = 240, bx = cx - bw / 2, by = 244;
+            using (var b = new SolidBrush(Color.FromArgb(40, 255, 255, 255)))
+                Theme.FillRound(g, Color.FromArgb(40, 255, 255, 255), new RectangleF(bx, by, bw, 4), 2);
+            float prog = EaseOut(Math.Min(1f, Math.Max(0, (t - 200f) / (Total - 500f))));
+            if (prog > 0)
+            {
+                var fill = new RectangleF(bx, by, bw * prog, 4);
+                using (var lg = new LinearGradientBrush(new RectangleF(bx, by, bw, 4),
+                            Theme.Accent, Color.FromArgb(94, 92, 230), 0f))
+                    g.FillPath(lg, Theme.Round(fill, 2));
+            }
+        }
+
+        static GraphicsPath Ellipse(float cx, float cy, float r)
+        {
+            var p = new GraphicsPath();
+            p.AddEllipse(cx - r, cy - r, r * 2, r * 2);
+            return p;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) { timer.Dispose(); if (logo != null) logo.Dispose(); }
+            base.Dispose(disposing);
+        }
+    }
+
+    // =====================================================================
+    //  Confiance du certificat : rend l'app "reconnue" sur le PC, avec l'accord
+    //  explicite de l'utilisateur (demandé une seule fois). Windows affiche en plus
+    //  son propre avertissement de sécurité : rien ne se fait en douce.
+    // =====================================================================
+    public static class CertTrust
+    {
+        // Partie PUBLIQUE du certificat BOZYILDIZ (aucun secret ici).
+        const string CerB64 =
+            "MIIEIDCCAoigAwIBAgIQK+BUhRvmia1B8lsJ2UhvVTANBgkqhkiG9w0BAQsFADAoMRIwEAYDVQQKDAlCT1pZSUxESVoxEjAQBgNVBAMMCUJPWllJTERJWjAeFw0yNjEwMzAxNjE1MTZaFw0zNjEwMzAxNjI1MTZaMCgxEjAQBgNVBAoMCUJPWllJTERJWjESMBAGA1UEAwwJQk9aWUlMRElaMIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAqFVnxLDZ3U9iOhFdRwaJp833tRk6VoMAN6U9j+8Z9ijO16W/WDN317X6m4GDveO5g+pTW4ISgrf1jOhTx6OBK/ElidxLV5fBcz+ESneEVIRC1kC1ksX9lyvC4Zt3ZVhpBB9yUcjPG6kSVtCK/Yj8O2o8oR9JP6zL/DVVESbN/GULEd6R9DtTtZ8q3cu848Qx79Yk/XHtR9V8YmUoqIdVHm7Cqid+SNbompSvFKlY1sapakdu1ZDyJ50PdFwdeBHZd3O1qadd/4vZ+V4Pb6oYDgVnINSfHcJzPlZTZquo7QDH70UEWh4/9Aurm9wl2hUKpD3OMu2CVZfzdph7dfvU//7/SISesYczPXhobqnSznfeXCpvpAKE9Kwj8Dge0Ypyi0lSlY7SsfmLpyBZhLE7JYZMBaj5/uaRDSCr2RKiLRpFrFheYc5ypZ6mvR4j5UAqncxIvXwW00eoDzWiA3/FiMHxgQ7QS4pk0a/kLpqXfxLP+gGKgz5DVpUkgNUycm2xAgMBAAGjRjBEMA4GA1UdDwEB/wQEAwIHgDATBgNVHSUEDDAKBggrBgEFBQcDAzAdBgNVHQ4EFgQU4H6nZSkT1IF+RE82VqSKRLnvzBIwDQYJKoZIhvcNAQELBQADggGBAGRYsLg1cji71T9PXQQX/BIr9KE0tEO0LScfS5rGzGHZlwiePIFrAajpMiNTm35QOadnGjwJHefGq91sjZa6VFZsYRDpwxV6C5DlUZWQdyFddK3ki0tdvkpT0KjRNVBHP8V0mwtkyBvm/lNlaGPRIJC7K2fg1CGW+VlSZiKjOTpaE1f5QL+kpqUC8wUGJymp3OZbndF4MQnO/fCbF0TVg2smpNy5CQyvEBXAm3Tl30qnICWcz2Lx5RC9RSMqzmTbb1f6n4q7A+9UwEOS209gldLI6MRc9tAPZb+AgmkOAkHhc3kpFTR3kTvtXV7/dPUW0uNapr+H0FAEZJZBuf/0fhNx5FC4cCNLT8O+ngqfF5LmbvRPxa4NpfhbbYeRsChBU8SDfbBopBiPQpH4TOkYd2Id0S3tq3rOkQ2rbcnSggMQbwIYgfUtdI/hIbzwXshAYn8wBVxBcljAisPjsjwn2zYhIWUpJoEejR7dAIOX64XkSAWDfVC9u1ZlxRHP0yzmrg==";
+
+        static string SkipFlag { get { return System.IO.Path.Combine(Route.DataDir, "cert-skip"); } }
+
+        static X509Certificate2 Cert() { return new X509Certificate2(Convert.FromBase64String(CerB64)); }
+
+        static bool IsTrusted()
+        {
+            try
+            {
+                using (var cert = Cert())
+                using (var store = new X509Store(StoreName.Root, StoreLocation.CurrentUser))
+                {
+                    store.Open(OpenFlags.ReadOnly);
+                    return store.Certificates.Find(X509FindType.FindByThumbprint, cert.Thumbprint, false).Count > 0;
+                }
+            }
+            catch { return true; }   // en cas de doute on n'embête pas l'utilisateur
+        }
+
+        public static void MaybePrompt()
+        {
+            try
+            {
+                if (IsTrusted() || System.IO.File.Exists(SkipFlag)) return;
+                using (var dlg = new CertConsentForm())
+                {
+                    var r = dlg.ShowDialog();
+                    if (r == DialogResult.OK) Install();
+                    else if (dlg.DontAsk)
+                    {
+                        try { System.IO.Directory.CreateDirectory(Route.DataDir); System.IO.File.WriteAllText(SkipFlag, ""); } catch { }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        // Ajoute le certificat public aux magasins de l'utilisateur courant (pas besoin d'admin).
+        // Le magasin "Racine" déclenche l'avertissement de sécurité de Windows : l'utilisateur confirme.
+        static void Install()
+        {
+            foreach (StoreName name in new[] { StoreName.Root, StoreName.TrustedPublisher })
+            {
+                try
+                {
+                    using (var cert = Cert())
+                    using (var store = new X509Store(name, StoreLocation.CurrentUser))
+                    {
+                        store.Open(OpenFlags.ReadWrite);
+                        store.Add(cert);
+                    }
+                }
+                catch { }   // refus de l'avertissement Windows, etc. : on n'insiste pas
+            }
+        }
+    }
+
+    // Fenêtre d'accord (style sombre), au 1er lancement uniquement.
+    public class CertConsentForm : Form
+    {
+        public bool DontAsk { get; private set; }
+
+        public CertConsentForm()
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.CenterScreen;
+            Size = new Size(440, 300);
+            BackColor = Theme.Bg;
+            Font = Theme.F(10f);
+            Region = new Region(Theme.Round(new RectangleF(0, 0, 440, 300), 16));
+            Shown += delegate { Theme.MacWindow(Handle); };
+
+            var title = new Label { Text = Lang.T("Rendre AutoClicker reconnu sur ce PC ?"), ForeColor = Theme.Text,
+                Font = Theme.FS(13f), AutoSize = false, Bounds = new Rectangle(24, 24, 392, 28) };
+            var body = new Label { ForeColor = Theme.Sub, AutoSize = false, Bounds = new Rectangle(24, 60, 392, 118),
+                Text = Lang.T("Windows ne connaît pas encore cette application et peut l'afficher comme « éditeur inconnu ». "
+                    + "Cette étape ajoute le certificat de BOZYILDIZ pour qu'AutoClicker soit reconnu sur ce PC.\n\n"
+                    + "Windows affichera un avertissement de sécurité : choisis « Oui » pour confirmer. "
+                    + "Tu peux refuser, l'application fonctionnera quand même.") };
+
+            var chk = new CheckBox { Text = Lang.T("Ne plus me demander"), ForeColor = Theme.Sub, AutoSize = true,
+                Location = new Point(24, 188), FlatStyle = FlatStyle.Flat };
+            chk.CheckedChanged += delegate { DontAsk = chk.Checked; };
+
+            var ok = new MacButton(Lang.T("Rendre reconnu"), Theme.Accent) { Bounds = new Rectangle(214, 240, 202, 40) };
+            var later = new MacButton(Lang.T("Plus tard"), Theme.Field) { Bounds = new Rectangle(24, 240, 180, 40) };
+            ok.Click += delegate { DialogResult = DialogResult.OK; Close(); };
+            later.Click += delegate { DialogResult = DialogResult.Cancel; Close(); };
+
+            Controls.Add(title); Controls.Add(body); Controls.Add(chk); Controls.Add(ok); Controls.Add(later);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            using (var pen = new Pen(Color.FromArgb(50, 255, 255, 255)))
+                e.Graphics.DrawPath(pen, Theme.Round(new RectangleF(0.5f, 0.5f, 439, 299), 16));
         }
     }
 
