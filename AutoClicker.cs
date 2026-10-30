@@ -207,7 +207,7 @@ namespace AutoClicker
             Theme.FillRound(g, Color.FromArgb(En ? 50 : 20, 0, 0, 0), new RectangleF(pill.X, pill.Y + 1, pill.Width, pill.Height), 6);
             Theme.FillRound(g, Theme.A(Theme.FieldHi, En), pill, 6);
             for (int i = 0; i < items.Length; i++)
-                Theme.DrawText(g, items[i], font, Theme.A(i == sel ? Theme.Text : Theme.Sub, En), new RectangleF(i * w, 0, w, Height), StringAlignment.Center);
+                Theme.DrawText(g, Lang.T(items[i]), font, Theme.A(i == sel ? Theme.Text : Theme.Sub, En), new RectangleF(i * w, 0, w, Height), StringAlignment.Center);
         }
     }
 
@@ -298,8 +298,9 @@ namespace AutoClicker
             for (int i = 0; i < items.Count; i++)
             {
                 int idx = i;
-                var it = new ToolStripMenuItem(items[i]) { Checked = i == sel, ForeColor = Theme.Text, AutoSize = false };
-                it.Size = new Size(Math.Max(Width, TextRenderer.MeasureText(items[i], font).Width + 50), 26);
+                string text = Lang.T(items[i]);
+                var it = new ToolStripMenuItem(text) { Checked = i == sel, ForeColor = Theme.Text, AutoSize = false };
+                it.Size = new Size(Math.Max(Width, TextRenderer.MeasureText(text, font).Width + 50), 26);
                 it.Click += delegate { SelectedIndex = idx; };
                 menu.Items.Add(it);
             }
@@ -314,7 +315,7 @@ namespace AutoClicker
             Theme.Hq(g);
             Color bg = hover && En ? Theme.Mix(Theme.Field, Color.White, 0.08f) : Theme.Field;
             Theme.FillRound(g, Theme.A(bg, En), new RectangleF(0, 0, Width - 1, Height - 1), 7);
-            string s = sel >= 0 && sel < items.Count ? items[sel] : "";
+            string s = sel >= 0 && sel < items.Count ? Lang.T(items[sel]) : "";
             Theme.DrawText(g, s, font, Theme.A(Theme.Text, En), new RectangleF(10, 0, Width - 34, Height), StringAlignment.Near);
 
             // double chevron à droite, comme sur macOS
@@ -585,7 +586,9 @@ namespace AutoClicker
 
         public string NameOf(int code)
         {
-            foreach (var k in keys) if (k.Code == code) return k.Name;
+            foreach (var k in keys)
+                if (k.Code == code)
+                    return k.Name.StartsWith("Pavé ") ? AutoClicker.Lang.T("Pavé") + " " + AutoClicker.Lang.T(k.Name.Substring(5)) : AutoClicker.Lang.T(k.Name);
             return "?";
         }
 
@@ -790,12 +793,442 @@ namespace AutoClicker
                 Theme.FillRound(g, Theme.A(c, En), r, 5);
 
                 // texte centré sans "…" : sur les petites touches il peut déborder d'un pixel dans l'espace entre touches
-                Font f = k.Label.Length <= 2 ? fBig : g.MeasureString(k.Label, fSmall, PointF.Empty, keyFmt).Width > r.Width - 2 ? fTiny : fSmall;
+                string label = AutoClicker.Lang.T(k.Label);
+                Font f = label.Length <= 2 ? fBig : g.MeasureString(label, fSmall, PointF.Empty, keyFmt).Width > r.Width - 2 ? fTiny : fSmall;
                 using (var b = new SolidBrush(Theme.A(k.Code == 0 ? Theme.Sub : Theme.Text, En)))
-                    g.DrawString(k.Label, f, b, new PointF(r.X + r.Width / 2, r.Y + r.Height / 2 + 0.5f), keyFmt);
+                    g.DrawString(label, f, b, new PointF(r.X + r.Width / 2, r.Y + r.Height / 2 + 0.5f), keyFmt);
                 if (on && multi)
                     Theme.DrawText(g, (order + 1).ToString(), fNum, Theme.A(Color.White, En), new RectangleF(r.Right - 12, r.Y, 12, 11), StringAlignment.Center);
             }
+        }
+    }
+
+    // Repère le message de récolte du serveur (« E | Mantarı Topla », cadre vert menthe) au centre de l'écran.
+    // On compte les pixels de ce vert : ~490 en 1080p quand le message est affiché, 0 sinon.
+    public class PromptDetector : IDisposable
+    {
+        readonly Rectangle zone;
+        readonly Bitmap bmp;
+        readonly Graphics g;
+        readonly double scale;
+
+        // Zone de l'écran à ignorer (la fenêtre du programme : ses interrupteurs sont verts eux aussi)
+        public Func<Rectangle> Exclude;
+
+        public PromptDetector()
+        {
+            // centre de l'écran : on évite la mini-carte, la barre d'objets et le HUD du serveur (eux aussi en vert)
+            Rectangle s = Screen.PrimaryScreen.Bounds;
+            zone = new Rectangle(s.X + s.Width * 20 / 100, s.Y + s.Height * 25 / 100, s.Width * 60 / 100, s.Height * 57 / 100);
+            bmp = new Bitmap(zone.Width, zone.Height, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+            g = Graphics.FromImage(bmp);
+            scale = 1080.0 * 1080.0 / ((double)s.Height * s.Height);   // le texte grandit avec la hauteur de l'écran
+        }
+
+        public Rectangle Zone { get { return zone; } }
+
+        // Nombre de pixels vert menthe dans la zone, ramené à un écran 1080p
+        public int Count()
+        {
+            try { g.CopyFromScreen(zone.Location, Point.Empty, zone.Size); }
+            catch { return 0; }
+
+            // rectangle à ignorer, ramené aux coordonnées de la zone capturée
+            Rectangle ex = Rectangle.Intersect(Exclude != null ? Exclude() : Rectangle.Empty, zone);
+            ex.Offset(-zone.X, -zone.Y);
+
+            var rect = new Rectangle(Point.Empty, bmp.Size);
+            var data = bmp.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+            int n = 0;
+            try
+            {
+                var row = new byte[data.Stride];
+                for (int y = 0; y < data.Height; y++)
+                {
+                    Marshal.Copy(data.Scan0 + y * data.Stride, row, 0, data.Stride);
+                    bool exRow = y >= ex.Top && y < ex.Bottom;
+                    for (int i = 0; i < data.Width * 4; i += 4)
+                    {
+                        if (exRow && i / 4 >= ex.Left && i / 4 < ex.Right) continue;
+                        int b = row[i], gr = row[i + 1], r = row[i + 2];
+                        if (gr > 170 && gr - r > 90 && gr - b > 30 && b > 80) n++;
+                    }
+                }
+            }
+            finally { bmp.UnlockBits(data); }
+            return (int)(n * scale);
+        }
+
+        public void Dispose() { g.Dispose(); bmp.Dispose(); }
+    }
+
+    // Trajet enregistré pour la récolte : touches et mouvements de souris horodatés (ms depuis le début),
+    // rejoués en boucle. Sauvegardé dans %APPDATA%\AutoClicker by BOZYILDIZ\trajet.txt
+    public class Route
+    {
+        public const byte KeyDown = 0, KeyUp = 1, Move = 2;
+
+        // touche : A = code (scan code, + 0xE000 si étendue) ; souris : A = dx, B = dy
+        public struct Ev
+        {
+            public int T, A, B;
+            public byte Kind;
+            public Ev(int t, byte kind, int a, int b) { T = t; Kind = kind; A = a; B = b; }
+        }
+
+        public readonly List<Ev> Events = new List<Ev>();
+        public int Duration;
+
+        // dossier des données du programme (trajet, journal de récolte)
+        public static string DataDir
+        {
+            get { return System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), MainForm.AppName); }
+        }
+
+        static string FilePath { get { return System.IO.Path.Combine(DataDir, "trajet.txt"); } }
+
+        public void Save()
+        {
+            try
+            {
+                System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(FilePath));
+                var sb = new System.Text.StringBuilder();
+                sb.Append(Duration).Append('\n');
+                foreach (var e in Events) sb.Append(e.T).Append(' ').Append(e.Kind).Append(' ').Append(e.A).Append(' ').Append(e.B).Append('\n');
+                System.IO.File.WriteAllText(FilePath, sb.ToString());
+            }
+            catch { }
+        }
+
+        public static Route Load()
+        {
+            try
+            {
+                if (!System.IO.File.Exists(FilePath)) return null;
+                string[] lines = System.IO.File.ReadAllLines(FilePath);
+                var r = new Route { Duration = int.Parse(lines[0]) };
+                for (int i = 1; i < lines.Length; i++)
+                {
+                    string[] p = lines[i].Split(' ');
+                    if (p.Length == 4) r.Events.Add(new Ev(int.Parse(p[0]), byte.Parse(p[1]), int.Parse(p[2]), int.Parse(p[3])));
+                }
+                return r.Duration > 0 && r.Events.Count > 0 ? r : null;
+            }
+            catch { return null; }
+        }
+    }
+
+    // =====================================================================
+    //  Traductions : le texte français sert de clé, Tr donne { anglais, turc }.
+    //  Langue choisie mémorisée dans %APPDATA%\AutoClicker by BOZYILDIZ\langue.txt
+    // =====================================================================
+    public static class Lang
+    {
+        public const int FR = 0, EN = 1, TR = 2;
+        static int current = Load();
+        public static event EventHandler Changed;
+
+        public static int Current
+        {
+            get { return current; }
+            set
+            {
+                if (value == current) return;
+                current = value;
+                try { System.IO.Directory.CreateDirectory(Route.DataDir); System.IO.File.WriteAllText(LangFile, value.ToString()); } catch { }
+                if (Changed != null) Changed(null, EventArgs.Empty);
+            }
+        }
+
+        static string LangFile { get { return System.IO.Path.Combine(Route.DataDir, "langue.txt"); } }
+
+        static int Load()
+        {
+            try { int v; if (int.TryParse(System.IO.File.ReadAllText(LangFile).Trim(), out v) && v >= 0 && v <= 2) return v; }
+            catch { }
+            return FR;
+        }
+
+        public static string T(string fr)
+        {
+            string[] t;
+            return current == FR || fr == null || !Tr.TryGetValue(fr, out t) ? fr : t[current - 1];
+        }
+
+        public static string T(string fr, params object[] args) { return string.Format(T(fr), args); }
+
+        static readonly Dictionary<string, string[]> Tr = new Dictionary<string, string[]>
+        {
+            // ---- onglets, modes ----
+            { "Récolte", new[] { "Harvest", "Hasat" } },
+            { "Intervalle", new[] { "Interval", "Aralık" } },
+            { "Mode", new[] { "Mode", "Mod" } },
+            { "millisecondes", new[] { "milliseconds", "milisaniye" } },
+            { "secondes", new[] { "seconds", "saniye" } },
+            { "minutes", new[] { "minutes", "dakika" } },
+            { "heures", new[] { "hours", "saat" } },
+            { "jamais", new[] { "never", "kapalı" } },
+
+            // ---- onglet AutoClicker ----
+            { "1 clic toutes les", new[] { "1 click every", "Tıklama aralığı" } },
+            { "Bouton gauche", new[] { "Left button", "Sol tuş" } },
+            { "Bouton droit", new[] { "Right button", "Sağ tuş" } },
+            { "Bouton milieu", new[] { "Middle button", "Orta tuş" } },
+            { "Bouton", new[] { "Button", "Fare tuşu" } },
+            { "Simple clic", new[] { "Single click", "Tek tık" } },
+            { "Double clic", new[] { "Double click", "Çift tık" } },
+            { "Type de clic", new[] { "Click type", "Tıklama türü" } },
+            { "Infini", new[] { "Unlimited", "Sonsuz" } },
+            { "Limité", new[] { "Limited", "Sınırlı" } },
+            { "Répétition", new[] { "Repeat", "Tekrar" } },
+            { "Nombre de clics", new[] { "Number of clicks", "Tıklama sayısı" } },
+            { "Souris", new[] { "Cursor", "Fare" } },
+            { "Point fixe", new[] { "Fixed point", "Sabit nokta" } },
+            { "Position", new[] { "Position", "Konum" } },
+            { "F7 pour enregistrer", new[] { "F7 to save", "Kaydetmek için F7" } },
+            { "Point enregistré", new[] { "Saved point", "Kayıtlı nokta" } },
+
+            // ---- onglet Anti-AFK ----
+            { "Agir toutes les", new[] { "Act every", "Eylem aralığı" } },
+            { "Mouvement souris (conseillé)", new[] { "Mouse movement (recommended)", "Fare hareketi (önerilen)" } },
+            { "Clic gauche", new[] { "Left click", "Sol tık" } },
+            { "Espace (sauter)", new[] { "Space (jump)", "Space (zıpla)" } },
+            { "(avancer)", new[] { "(walk forward)", "(ileri yürü)" } },
+            { "Souris + Espace", new[] { "Mouse + Space", "Fare + Space" } },
+            { "Clavier (choisir les touches)", new[] { "Keyboard (pick keys)", "Klavye (tuşları seç)" } },
+            { "Action", new[] { "Action", "Eylem" } },
+            { "AZERTY (France, Belgique)", new[] { "AZERTY (France, Belgium)", "AZERTY (Fransa, Belçika)" } },
+            { "QWERTY (US, UK, ES, IT…)", new[] { "QWERTY (US, UK, ES, IT…)", "QWERTY (ABD, İngiltere, İspanya…)" } },
+            { "QWERTZ (Allemagne, Suisse)", new[] { "QWERTZ (Germany, Switzerland)", "QWERTZ (Almanya, İsviçre)" } },
+            { "Disposition", new[] { "Layout", "Klavye düzeni" } },
+            { "Arrêt auto après", new[] { "Auto-stop after", "Otomatik durdurma" } },
+            { "Seulement si je suis inactif", new[] { "Only when I'm idle", "Sadece hareketsizken" } },
+            { "Se met en pause tout seul quand tu joues", new[] { "Pauses automatically while you play", "Sen oynarken kendiliğinden duraklar" } },
+            { "Choisis un temps plus court que le kick du jeu (ex : kick à 20 min → agir toutes les 1 à 5 min).\n\n"
+              + "La fenêtre du jeu doit être au premier plan pour que l'action soit prise en compte.",
+              new[] { "Pick an interval shorter than the game's AFK kick (e.g. kick at 20 min → act every 1 to 5 min).\n\n"
+                      + "The game window must be in the foreground for the action to register.",
+                      "Oyunun AFK'dan atma süresinden daha kısa bir süre seç (örn. 20 dk'da atıyorsa → 1 ila 5 dk'da bir).\n\n"
+                      + "Eylemin algılanması için oyun penceresi ön planda olmalı." } },
+
+            // ---- clavier visuel ----
+            { "Type de clavier", new[] { "Keyboard type", "Klavye türü" } },
+            { "Une touche", new[] { "One key", "Tek tuş" } },
+            { "Plusieurs touches", new[] { "Multiple keys", "Birden fazla tuş" } },
+            { "Sélection", new[] { "Selection", "Seçim" } },
+            { "Garder la touche enfoncée pendant", new[] { "Hold each key for", "Tuşu basılı tutma süresi" } },
+            { "Attendre entre chaque touche", new[] { "Wait between keys", "Tuşlar arası bekleme" } },
+            { "Touches choisies", new[] { "Selected keys", "Seçilen tuşlar" } },
+            { "aucune — clique sur le clavier", new[] { "none — click the keyboard", "yok — klavyeye tıkla" } },
+            { "Clique sur une touche pour la choisir (clique encore pour la retirer en mode « Plusieurs touches »). "
+              + "Les touches sont appuyées dans l'ordre des numéros, à chaque action.\n\n"
+              + "Garder la touche enfoncée : combien de temps le doigt reste appuyé sur la touche. "
+              + "100 ms = un appui rapide ; 2 secondes sur Z = avancer pendant 2 secondes.\n"
+              + "Attendre entre chaque touche : la pause avant d'appuyer sur la touche suivante (mode « Plusieurs touches »).",
+              new[] { "Click a key to select it (click it again to remove it in “Multiple keys” mode). "
+                      + "On each action, keys are pressed in numbered order.\n\n"
+                      + "Hold each key for: how long each key stays pressed. "
+                      + "100 ms = a quick tap; 2 seconds on W = walk forward for 2 seconds.\n"
+                      + "Wait between keys: the pause before pressing the next key (“Multiple keys” mode).",
+                      "Seçmek için bir tuşa tıkla (“Birden fazla tuş” modunda kaldırmak için tekrar tıkla). "
+                      + "Her eylemde tuşlara numara sırasıyla basılır.\n\n"
+                      + "Tuşu basılı tutma süresi: tuşun ne kadar süre basılı kalacağı. "
+                      + "100 ms = hızlı bir basış; W'ye 2 saniye basmak = 2 saniye ileri yürümek.\n"
+                      + "Tuşlar arası bekleme: bir sonraki tuşa basmadan önceki bekleme (“Birden fazla tuş” modu)." } },
+
+            // ---- touches du clavier visuel ----
+            { "Échap", new[] { "Esc", "Esc" } },
+            { "Impr", new[] { "PrtSc", "PrtSc" } },
+            { "Défil", new[] { "ScrLk", "ScrLk" } },
+            { "Retour", new[] { "Backspace", "Backspace" } },
+            { "Verr. maj", new[] { "Caps Lock", "Caps Lock" } },
+            { "Entrée", new[] { "Enter", "Enter" } },
+            { "Maj", new[] { "Shift", "Shift" } },
+            { "Espace", new[] { "Space", "Space" } },
+            { "Inser", new[] { "Ins", "Ins" } },
+            { "Début", new[] { "Home", "Home" } },
+            { "Suppr", new[] { "Del", "Del" } },
+            { "Fin", new[] { "End", "End" } },
+            { "Pg ↑", new[] { "PgUp", "PgUp" } },
+            { "Pg ↓", new[] { "PgDn", "PgDn" } },
+            { "Maj gauche", new[] { "Left Shift", "Sol Shift" } },
+            { "Maj droite", new[] { "Right Shift", "Sağ Shift" } },
+            { "Alt droite", new[] { "Right Alt", "Sağ Alt" } },
+            { "Win droite", new[] { "Right Win", "Sağ Win" } },
+            { "Ctrl droite", new[] { "Right Ctrl", "Sağ Ctrl" } },
+            { "cmd droite", new[] { "right cmd", "sağ cmd" } },
+            { "option droite", new[] { "right option", "sağ option" } },
+            { "control droite", new[] { "right control", "sağ control" } },
+            { "Flèche haut", new[] { "Up arrow", "Yukarı ok" } },
+            { "Flèche gauche", new[] { "Left arrow", "Sol ok" } },
+            { "Flèche bas", new[] { "Down arrow", "Aşağı ok" } },
+            { "Flèche droite", new[] { "Right arrow", "Sağ ok" } },
+            { "Verr num", new[] { "Num Lock", "Num Lock" } },
+            { "Pavé", new[] { "Numpad", "Numpad" } },
+
+            // ---- onglet Récolte ----
+            { "Touche à appuyer", new[] { "Key to press", "Basılacak tuş" } },
+            { "Pause après récolte", new[] { "Pause after harvest", "Hasat sonrası bekleme" } },
+            { "Basse", new[] { "Low", "Düşük" } },
+            { "Normale", new[] { "Normal", "Normal" } },
+            { "Haute", new[] { "High", "Yüksek" } },
+            { "Sensibilité", new[] { "Sensitivity", "Hassasiyet" } },
+            { "pas visible", new[] { "not visible", "görünmüyor" } },
+            { "détecté", new[] { "detected", "algılandı" } },
+            { "Message de récolte", new[] { "Harvest prompt", "Hasat mesajı" } },
+            { "Suivre un trajet enregistré", new[] { "Follow a recorded route", "Kayıtlı rotayı takip et" } },
+            { "Trajet", new[] { "Route", "Rota" } },
+            { "Appuie sur la touche dès que le cadre vert du message de récolte apparaît au centre de l'écran.\n"
+              + "Trajet : en jeu, appuie sur F9, fais le tour du champ en revenant au point de départ, puis F9. "
+              + "Avec F6, le perso refait ce tour en boucle et s'arrête pour ramasser.",
+              new[] { "Presses the key as soon as the green frame of the harvest prompt shows up in the middle of the screen.\n"
+                      + "Route: in game, press F9, walk around the field and back to your starting point, then press F9 again. "
+                      + "With F6, your character loops this route and stops to harvest.",
+                      "Hasat mesajının yeşil çerçevesi ekranın ortasında belirince tuşa basar.\n"
+                      + "Rota: oyunda F9'a bas, tarlanın etrafını dolaşıp başlangıç noktasına dön, sonra tekrar F9'a bas. "
+                      + "F6 ile karakterin bu turu döngü halinde tekrarlar ve toplamak için durur." } },
+
+            // ---- réglages communs, bouton, statut ----
+            { "Notification à l'écran", new[] { "On-screen notification", "Ekran bildirimi" } },
+            { "Indicateur permanent si actif", new[] { "Indicator while running", "Aktifken kalıcı gösterge" } },
+            { "Démarrer   (F6)", new[] { "Start   (F6)", "Başlat   (F6)" } },
+            { "Arrêter   (F6)", new[] { "Stop   (F6)", "Durdur   (F6)" } },
+            { "Prêt — F6 pour démarrer / arrêter", new[] { "Ready — F6 to start / stop", "Hazır — başlatmak / durdurmak için F6" } },
+            { "Démarrage dans {0} s…", new[] { "Starting in {0} s…", "{0} sn içinde başlıyor…" } },
+            { "Arrêt en cours… réessaie dans un instant", new[] { "Stopping… try again in a moment", "Durduruluyor… birazdan tekrar dene" } },
+            { "En cours — {0} clics  ·  F6 pour arrêter", new[] { "Running — {0} clicks  ·  F6 to stop", "Çalışıyor — {0} tık  ·  durdurmak için F6" } },
+            { "Récolte active — {0} récoltes  ·  F6 pour arrêter", new[] { "Harvest on — {0} harvested  ·  F6 to stop", "Hasat açık — {0} hasat  ·  durdurmak için F6" } },
+            { "Message détecté, récolte…", new[] { "Prompt detected, harvesting…", "Mesaj algılandı, hasat ediliyor…" } },
+            { "Trajet en cours — tour {0}", new[] { "Route running — lap {0}", "Rota sürüyor — {0}. tur" } },
+            { "Déplace-toi vers un champignon", new[] { "Move towards a mushroom", "Bir mantara doğru git" } },
+            { "Anti-AFK actif — {0} actions  ·  prochaine dans {1}", new[] { "Anti-AFK on — {0} actions  ·  next in {1}", "Anti-AFK açık — {0} eylem  ·  sonraki: {1}" } },
+            { "Arrêt automatique dans {0}", new[] { "Auto-stop in {0}", "{0} içinde otomatik duracak" } },
+            { "Le compte à rebours repart quand tu bouges", new[] { "The countdown restarts when you move", "Hareket edince geri sayım yeniden başlar" } },
+            { "Arrêté — {0} clics", new[] { "Stopped — {0} clicks", "Durduruldu — {0} tık" } },
+            { "Arrêté — {0} actions", new[] { "Stopped — {0} actions", "Durduruldu — {0} eylem" } },
+            { "Arrêté — {0} récoltes", new[] { "Stopped — {0} harvested", "Durduruldu — {0} hasat" } },
+            { "AutoClicker activé", new[] { "AutoClicker on", "AutoClicker açıldı" } },
+            { "Anti-AFK activé", new[] { "Anti-AFK on", "Anti-AFK açıldı" } },
+            { "Récolte activée", new[] { "Harvest on", "Hasat açıldı" } },
+            { "AutoClicker désactivé", new[] { "AutoClicker off", "AutoClicker kapandı" } },
+            { "Anti-AFK désactivé", new[] { "Anti-AFK off", "Anti-AFK kapandı" } },
+            { "Récolte désactivée", new[] { "Harvest off", "Hasat kapandı" } },
+            { "AutoClicker actif  ·  F6", new[] { "AutoClicker on  ·  F6", "AutoClicker açık  ·  F6" } },
+            { "Anti-AFK actif  ·  F6", new[] { "Anti-AFK on  ·  F6", "Anti-AFK açık  ·  F6" } },
+            { "Récolte active  ·  F6", new[] { "Harvest on  ·  F6", "Hasat açık  ·  F6" } },
+
+            // ---- trajet ----
+            { "Enregistrement du trajet  ·  F9 pour finir", new[] { "Recording route  ·  F9 to finish", "Rota kaydediliyor  ·  bitirmek için F9" } },
+            { "Enregistrement du trajet  ·  F9", new[] { "Recording route  ·  F9", "Rota kaydediliyor  ·  F9" } },
+            { "Trajet trop court, ancien trajet conservé", new[] { "Route too short, previous route kept", "Rota çok kısa, eski rota korundu" } },
+            { "Trajet enregistré  ·  {0}", new[] { "Route saved  ·  {0}", "Rota kaydedildi  ·  {0}" } },
+            { "enregistrement… {0}  ·  F9", new[] { "recording… {0}  ·  F9", "kaydediliyor… {0}  ·  F9" } },
+            { "aucun  ·  F9 pour enregistrer", new[] { "none  ·  F9 to record", "yok  ·  kaydetmek için F9" } },
+            { "{0}  ·  F9 pour refaire", new[] { "{0}  ·  F9 to re-record", "{0}  ·  yeniden kaydetmek için F9" } },
+
+            // ---- messages ----
+            { "Impossible d'écouter le clavier et la souris pour enregistrer le trajet.",
+              new[] { "Can't capture keyboard and mouse input to record the route.", "Rotayı kaydetmek için klavye ve fare dinlenemiyor." } },
+            { "Enregistre d'abord un trajet : en jeu, appuie sur F9, fais le tour du champ, puis F9 à nouveau.",
+              new[] { "Record a route first: in game, press F9, walk around the field, then press F9 again.",
+                      "Önce bir rota kaydet: oyunda F9'a bas, tarlanın etrafını dolaş, sonra tekrar F9'a bas." } },
+            { "Place la souris puis appuie sur F7 pour enregistrer le point fixe.",
+              new[] { "Move the cursor to the spot, then press F7 to save the fixed point.", "Fareyi yerleştir, sonra sabit noktayı kaydetmek için F7'ye bas." } },
+            { "Choisis au moins une touche sur le clavier.", new[] { "Pick at least one key on the keyboard.", "Klavyeden en az bir tuş seç." } },
+        };
+    }
+
+    // Drapeaux de langue (France, Royaume-Uni, Turquie) dessinés à la main, en haut à droite
+    public class LangFlags : MacControl
+    {
+        const int FW = 22, FH = 15, Gap = 8;
+        int hover = -1;
+
+        public LangFlags() { Size = new Size(3 * FW + 2 * Gap + 2, FH + 2); }
+
+        int HitTest(int x) { int i = x / (FW + Gap); return i >= 0 && i < 3 && x - i * (FW + Gap) <= FW ? i : -1; }
+
+        protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); int h = HitTest(e.X); if (h != hover) { hover = h; Invalidate(); } }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hover = -1; Invalidate(); }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            int h = HitTest(e.X);
+            if (h >= 0 && En) { Lang.Current = h; Invalidate(); }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            Theme.Hq(g);
+            for (int i = 0; i < 3; i++)
+            {
+                var r = new RectangleF(1 + i * (FW + Gap), 1, FW, FH);
+                using (var clip = Theme.Round(r, 3))
+                {
+                    var state = g.Save();
+                    g.SetClip(clip);
+                    if (i == 0) DrawFrance(g, r); else if (i == 1) DrawUk(g, r); else DrawTurkey(g, r);
+                    g.Restore(state);
+
+                    // langue non choisie : drapeau assombri (moins si survolé)
+                    if (i != Lang.Current)
+                        using (var b = new SolidBrush(Color.FromArgb(i == hover ? 70 : 140, Theme.Bg))) g.FillPath(b, clip);
+                    using (var pen = new Pen(i == Lang.Current ? Color.FromArgb(220, 255, 255, 255) : Color.FromArgb(40, 255, 255, 255), i == Lang.Current ? 1.4f : 1f))
+                        g.DrawPath(pen, clip);
+                }
+            }
+        }
+
+        static void DrawFrance(Graphics g, RectangleF r)
+        {
+            float w = r.Width / 3;
+            using (var b = new SolidBrush(Color.FromArgb(0, 85, 164))) g.FillRectangle(b, r.X, r.Y, w + 0.5f, r.Height);
+            using (var b = new SolidBrush(Color.White)) g.FillRectangle(b, r.X + w, r.Y, w + 0.5f, r.Height);
+            using (var b = new SolidBrush(Color.FromArgb(239, 65, 53))) g.FillRectangle(b, r.X + 2 * w, r.Y, w, r.Height);
+        }
+
+        static void DrawUk(Graphics g, RectangleF r)
+        {
+            Color blue = Color.FromArgb(1, 33, 105), red = Color.FromArgb(200, 16, 46);
+            using (var b = new SolidBrush(blue)) g.FillRectangle(b, r);
+            float h = r.Height;
+            using (var p = new Pen(Color.White, h * 0.3f)) { g.DrawLine(p, r.Left, r.Top, r.Right, r.Bottom); g.DrawLine(p, r.Left, r.Bottom, r.Right, r.Top); }
+            using (var p = new Pen(red, h * 0.1f)) { g.DrawLine(p, r.Left, r.Top, r.Right, r.Bottom); g.DrawLine(p, r.Left, r.Bottom, r.Right, r.Top); }
+            float cx = r.X + r.Width / 2, cy = r.Y + h / 2;
+            using (var b = new SolidBrush(Color.White))
+            {
+                g.FillRectangle(b, cx - h * 0.17f, r.Top, h * 0.34f, h);
+                g.FillRectangle(b, r.Left, cy - h * 0.17f, r.Width, h * 0.34f);
+            }
+            using (var b = new SolidBrush(red))
+            {
+                g.FillRectangle(b, cx - h * 0.1f, r.Top, h * 0.2f, h);
+                g.FillRectangle(b, r.Left, cy - h * 0.1f, r.Width, h * 0.2f);
+            }
+        }
+
+        static void DrawTurkey(Graphics g, RectangleF r)
+        {
+            Color red = Color.FromArgb(227, 10, 23);
+            float h = r.Height, cy = r.Y + h / 2;
+            using (var b = new SolidBrush(red)) g.FillRectangle(b, r);
+            // croissant : grand disque blanc moins un disque rouge décalé vers la droite
+            float cx = r.X + h * 0.5f + 1;
+            using (var b = new SolidBrush(Color.White)) g.FillEllipse(b, cx - h * 0.25f, cy - h * 0.25f, h * 0.5f, h * 0.5f);
+            float cx2 = cx + h * 0.0625f;
+            using (var b = new SolidBrush(red)) g.FillEllipse(b, cx2 - h * 0.2f, cy - h * 0.2f, h * 0.4f, h * 0.4f);
+            // étoile à cinq branches, une pointe tournée vers le croissant
+            float sx = cx2 + h * 0.2f + h * 0.15f, sr = h * 0.125f;
+            var pts = new PointF[10];
+            for (int i = 0; i < 10; i++)
+            {
+                double a = Math.PI + i * Math.PI / 5;
+                float rad = i % 2 == 0 ? sr : sr * 0.4f;
+                pts[i] = new PointF(sx + (float)(Math.Cos(a) * rad), cy + (float)(Math.Sin(a) * rad));
+            }
+            using (var b = new SolidBrush(Color.White)) g.FillPolygon(b, pts);
         }
     }
 
@@ -829,8 +1262,17 @@ namespace AutoClicker
         public const string AppName = "AutoClicker by BOZYILDIZ";
 
         const int WM_HOTKEY = 0x0312;
-        const int HK_TOGGLE = 1, HK_POS = 2;
-        const uint VK_F6 = 0x75, VK_F7 = 0x76;
+        const int HK_TOGGLE = 1, HK_POS = 2, HK_ROUTE = 3;
+        const uint VK_F6 = 0x75, VK_F7 = 0x76, VK_F9 = 0x78;
+        const int WM_INPUT = 0x00FF;
+
+        // ---- Raw Input (enregistrement du trajet) ----
+        [DllImport("user32.dll")] static extern bool RegisterRawInputDevices(RAWINPUTDEVICE[] devices, uint count, uint size);
+        [DllImport("user32.dll")] static extern uint GetRawInputData(IntPtr hRawInput, uint command, byte[] data, ref uint size, uint headerSize);
+        [StructLayout(LayoutKind.Sequential)]
+        struct RAWINPUTDEVICE { public ushort usUsagePage, usUsage; public uint dwFlags; public IntPtr hwndTarget; }
+        [StructLayout(LayoutKind.Sequential)]
+        struct RAWINPUTHEADER { public uint dwType, dwSize; public IntPtr hDevice, wParam; }
 
         // ---- mise en page ----
         const int W = 420, M = 16, CW = W - 2 * M, RowH = 42;
@@ -840,7 +1282,12 @@ namespace AutoClicker
         // ---- UI ----
         TrafficLights lights;
         Segmented segTabs, segMode, segRepeat, segPos, segKbOs, segKbMulti;
-        Panel pnlClick, pnlAfk, pnlKb;
+        Panel pnlClick, pnlAfk, pnlKb, pnlHarvest;
+        Segmented segHarvSens;
+        MacSelect cbHarvKey, cbHarvUnit;
+        MacNumber numHarvWait;
+        Label lblDetect, lblRoute;
+        Toggle chkRoute;
         MacNumber numInterval, numCount, numAfk, numAfkStop, numKeyHold, numKeyGap;
         MacSelect cbUnit, cbButton, cbType, cbAfkUnit, cbAfkAction, cbLayout, cbAfkStop, cbHoldUnit, cbGapUnit;
         KeyboardView kb;
@@ -855,7 +1302,31 @@ namespace AutoClicker
         Thread worker;
         ManualResetEvent stopEvent = new ManualResetEvent(false);
         volatile bool running;
-        volatile bool afkMode;
+        volatile int runMode;      // 0 = AutoClicker, 1 = Anti-AFK, 2 = Récolte
+        volatile bool promptSeen;  // récolte : message vu à la dernière vérification
+        // textes par mode (AutoClicker, Anti-AFK, Récolte), traduits avec T()
+        static readonly string[] ModeOn = { "AutoClicker activé", "Anti-AFK activé", "Récolte activée" };
+        static readonly string[] ModeOff = { "AutoClicker désactivé", "Anti-AFK désactivé", "Récolte désactivée" };
+        static readonly string[] ModeBadge = { "AutoClicker actif  ·  F6", "Anti-AFK actif  ·  F6", "Récolte active  ·  F6" };
+        static readonly string[] ModeStopped = { "Arrêté — {0} clics", "Arrêté — {0} actions", "Arrêté — {0} récoltes" };
+        LangFlags flags;
+        readonly List<KeyValuePair<Label, string>> fixedLabels = new List<KeyValuePair<Label, string>>();   // libellé → texte français
+        bool detectSeen;
+        string statusKey = "Prêt — F6 pour démarrer / arrêter";   // dernier statut affiché à l'arrêt (texte français)
+        object statusArg;
+        static readonly int[] HarvestKeys = { 0x12, 0x21, 0x22, 0x23, 0x2D, 0x39 };   // E, F, G, H, X, Espace
+        static readonly int[] HarvestThresholds = { 300, 150, 60 };                  // sensibilité basse / normale / haute
+        PromptDetector previewDetector;
+        Route route = Route.Load();   // trajet de récolte (null = aucun)
+        bool recording;               // enregistrement du trajet en cours (F9)
+        Route recRoute;
+        int recStart;
+        bool hotKeyVariants;          // F6 / F9 aussi pris avec Alt / Ctrl / Maj (pendant un lancement ou un enregistrement)
+        Rectangle visibleBounds;      // position de cette fenêtre à l'écran (vide si réduite), exclue de la détection
+        readonly object boundsLock = new object();
+        HashSet<int> recDown;         // touches enfoncées pendant l'enregistrement
+        volatile bool harvestRoute;   // la récolte en cours suit le trajet
+        int laps;                     // tours de trajet terminés
         long clicks;
         long nextActionMs;   // anti-AFK : ms restantes avant la prochaine action
         long stopLeftMs;     // anti-AFK : ms restantes avant l'arrêt automatique (-1 = jamais)
@@ -879,13 +1350,14 @@ namespace AutoClicker
             lights = new TrafficLights { Location = new Point(18, 16) };
             lights.CloseClick += delegate { Close(); };
             lights.MinClick += delegate { WindowState = FormWindowState.Minimized; };
-            lights.PinClick += delegate { TopMost = !TopMost; lights.Pinned = TopMost; lights.Invalidate(); };
+            lights.PinClick += delegate { TopMost = !TopMost; lights.Pinned = TopMost; lights.Invalidate(); SaveBounds(); };
 
-            segTabs = new Segmented("AutoClicker", "Anti-AFK") { Size = new Size(260, 30), Location = new Point((W - 260) / 2, 50) };
+            segTabs = new Segmented("AutoClicker", "Anti-AFK", "Récolte") { Size = new Size(330, 30), Location = new Point((W - 330) / 2, 50) };
             segTabs.SelectedIndexChanged += delegate
             {
                 pnlClick.Visible = segTabs.SelectedIndex == 0;
                 pnlAfk.Visible = segTabs.SelectedIndex == 1;
+                pnlHarvest.Visible = segTabs.SelectedIndex == 2;
                 UpdateKbPanel();
             };
 
@@ -956,6 +1428,38 @@ namespace AutoClicker
                 Font = fSmall, ForeColor = Theme.Sub
             });
 
+            // ===== Onglet Récolte : appuie sur E quand le message de récolte apparaît =====
+            pnlHarvest = new Panel { Location = new Point(0, 94), Size = new Size(W, 372), BackColor = Theme.Bg, Visible = false };
+            var h1 = MakeCard(pnlHarvest, 0, 4);
+            cbHarvKey = new MacSelect("E", "F", "G", "H", "X", "Espace") { Width = 110 };
+            AddRow(h1, 0, "Touche à appuyer", cbHarvKey);
+            numHarvWait = new MacNumber(1, 100000, 5) { Width = 60 };
+            cbHarvUnit = new MacSelect("millisecondes", "secondes") { Width = 120 };
+            cbHarvUnit.SelectedIndex = 1;
+            AddRow(h1, 1, "Pause après récolte", numHarvWait, cbHarvUnit);
+            segHarvSens = new Segmented("Basse", "Normale", "Haute") { Width = 210 };
+            segHarvSens.SelectedIndex = 1;
+            AddRow(h1, 2, "Sensibilité", segHarvSens);
+
+            lblDetect = new Label { AutoSize = false, Size = new Size(170, 28), TextAlign = ContentAlignment.MiddleRight, Font = fRow, ForeColor = Theme.Sub, Text = "pas visible" };
+            AddRow(h1, 3, "Message de récolte", lblDetect);
+
+            var h2 = MakeCard(pnlHarvest, 180, 2);
+            chkRoute = new Toggle(route != null);
+            AddRow(h2, 0, "Suivre un trajet enregistré", chkRoute);
+            lblRoute = new Label { AutoSize = false, Size = new Size(230, 28), TextAlign = ContentAlignment.MiddleRight, Font = fRow };
+            AddRow(h2, 1, "Trajet", lblRoute);
+            UpdateRouteLabel();
+
+            pnlHarvest.Controls.Add(new Label
+            {
+                Text = "Appuie sur la touche dès que le cadre vert du message de récolte apparaît au centre de l'écran.\n"
+                     + "Trajet : en jeu, appuie sur F9, fais le tour du champ en revenant au point de départ, puis F9. "
+                     + "Avec F6, le perso refait ce tour en boucle et s'arrête pour ramasser.",
+                Location = new Point(M + 6, 272), MaximumSize = new Size(CW - 12, 0), AutoSize = true,
+                Font = fSmall, ForeColor = Theme.Sub
+            });
+
             // ===== Clavier visuel : s'ouvre à droite quand l'action "Clavier" est choisie =====
             pnlKb = new Panel { Location = new Point(W, 94), Size = new Size(KW, 560), BackColor = Theme.Bg, Visible = false };
             var k1 = MakeCard(pnlKb, 0, 2, 0, KW);
@@ -1014,10 +1518,18 @@ namespace AutoClicker
                 TextAlign = ContentAlignment.TopCenter, Font = fSmall, ForeColor = Theme.Sub
             };
 
-            Controls.AddRange(new Control[] { lights, segTabs, pnlClick, pnlAfk, pnlKb, btnStart, lblStatus });
+            flags = new LangFlags();
+            flags.Location = new Point(W - M - flags.Width, 15);
 
+            Controls.AddRange(new Control[] { lights, flags, segTabs, pnlClick, pnlAfk, pnlHarvest, pnlKb, btnStart, lblStatus });
+
+            // traduction : on retient le texte français de chaque libellé fixe, puis on applique la langue choisie
             toast = new Overlay(false);
             badge = new Overlay(true);
+
+            CollectFixedLabels(this);
+            Lang.Changed += OnLangChanged;
+            ApplyLanguage();
 
             UpdateLocks();
 
@@ -1026,6 +1538,8 @@ namespace AutoClicker
             {
                 if (running) lblStatus.Text = StatusText();
                 else if (uiRunning) ResetUi();
+                UpdateDetectLabel();
+                if (recording) UpdateRouteLabel();
             };
             uiTimer.Start();
         }
@@ -1055,9 +1569,46 @@ namespace AutoClicker
             }
         }
 
-        Label UnitLabel(string text)
+        // ---------- traduction ----------
+        static string T(string fr) { return Lang.T(fr); }
+        static string T(string fr, params object[] args) { return Lang.T(fr, args); }
+
+        // libellés au texte fixe ; ceux qui changent pendant l'utilisation sont remplis par leur propre code
+        void CollectFixedLabels(Control root)
         {
-            return new Label { Text = text, AutoSize = false, Size = new Size(24, 28), TextAlign = ContentAlignment.MiddleLeft, Font = fRow, ForeColor = Theme.Sub };
+            foreach (Control c in root.Controls)
+            {
+                var l = c as Label;
+                if (l != null && l != lblStatus && l != lblPos && l != lblDetect && l != lblRoute && l != lblKeys && !string.IsNullOrEmpty(l.Text))
+                    fixedLabels.Add(new KeyValuePair<Label, string>(l, l.Text));
+                CollectFixedLabels(c);
+            }
+        }
+
+        void OnLangChanged(object sender, EventArgs e) { ApplyLanguage(); }
+
+        // statut affiché hors lancement : retenu pour pouvoir le retraduire si on change de langue
+        void SetStatus(string key, object arg = null)
+        {
+            statusKey = key;
+            statusArg = arg;
+            lblStatus.Text = arg == null ? T(key) : T(key, arg);
+        }
+
+        void ApplyLanguage()
+        {
+            foreach (var p in fixedLabels) p.Key.Text = T(p.Value);
+            btnStart.Text = T(uiRunning ? "Arrêter   (F6)" : "Démarrer   (F6)");
+            if (!uiRunning) SetStatus(statusKey, statusArg);
+            if (recording) badge.SetBadgeText(T("Enregistrement du trajet  ·  F9"));
+            else if (uiRunning) badge.SetBadgeText(T(ModeBadge[runMode]));
+            if (badge.Visible) badge.ShowBadge();   // repositionne l'indicateur (sa largeur a changé)
+            if (fixedPos == Point.Empty) lblPos.Text = T("F7 pour enregistrer");
+            UpdateForwardLabel();
+            UpdateKeysLabel();
+            UpdateRouteLabel();
+            SetDetect(detectSeen);
+            Invalidate(true);   // onglets, menus et clavier visuel se traduisent en se redessinant
         }
 
         // Le clavier visuel s'affiche à droite (la fenêtre s'élargit) quand l'action "Clavier" est choisie
@@ -1075,7 +1626,7 @@ namespace AutoClicker
             var keys = kb.Selected;
             if (keys.Count == 0)
             {
-                lblKeys.Text = "aucune — clique sur le clavier";
+                lblKeys.Text = T("aucune — clique sur le clavier");
                 lblKeys.ForeColor = Theme.Sub;
                 return;
             }
@@ -1120,7 +1671,7 @@ namespace AutoClicker
         // seule la lettre affichée change selon le clavier.
         void UpdateForwardLabel()
         {
-            cbAfkAction.SetItem(3, (cbLayout.SelectedIndex == 0 ? "Z" : "W") + " (avancer)");
+            cbAfkAction.SetItem(3, (cbLayout.SelectedIndex == 0 ? "Z" : "W") + " " + T("(avancer)"));
         }
 
         static int DetectLayout()
@@ -1132,14 +1683,52 @@ namespace AutoClicker
             return 1;
         }
 
+        // Position de la fenêtre lue par le thread de récolte : la fenêtre ne doit pas se détecter elle-même
+        Rectangle VisibleBounds() { lock (boundsLock) return visibleBounds; }
+
+        void SaveBounds()
+        {
+            // non épinglée, la fenêtre passe derrière le jeu : il ne faut pas exclure ce qu'il y a dessous
+            lock (boundsLock) visibleBounds = WindowState == FormWindowState.Minimized || !TopMost ? Rectangle.Empty : Bounds;
+        }
+
+        protected override void OnMove(EventArgs e) { base.OnMove(e); SaveBounds(); }
+        protected override void OnResize(EventArgs e) { base.OnResize(e); SaveBounds(); }
+
+        // Onglet Récolte : montre en direct si le message est vu (pratique pour tester avant de lancer)
+        void UpdateDetectLabel()
+        {
+            if (segTabs.SelectedIndex != 2 || WindowState == FormWindowState.Minimized) return;
+            bool seen;
+            if (running) seen = promptSeen;
+            else
+            {
+                if (previewDetector == null) previewDetector = new PromptDetector { Exclude = VisibleBounds };
+                seen = previewDetector.Count() >= HarvestThresholds[segHarvSens.SelectedIndex];
+            }
+            SetDetect(seen);
+        }
+
+        void SetDetect(bool seen)
+        {
+            detectSeen = seen;
+            lblDetect.Text = T(seen ? "détecté" : "pas visible");
+            lblDetect.ForeColor = seen ? Theme.Green : Theme.Sub;
+        }
+
         string StatusText()
         {
             long n = Interlocked.Read(ref clicks);
-            if (!afkMode) return "En cours — " + n + " clics  ·  F6 pour arrêter";
+            if (runMode == 0) return T("En cours — {0} clics  ·  F6 pour arrêter", n);
+            if (runMode == 2)
+                return T("Récolte active — {0} récoltes  ·  F6 pour arrêter", n) + "\n"
+                     + (promptSeen ? T("Message détecté, récolte…")
+                        : harvestRoute ? T("Trajet en cours — tour {0}", laps + 1)
+                        : T("Déplace-toi vers un champignon"));
             long left = Interlocked.Read(ref stopLeftMs);
-            return "Anti-AFK actif — " + n + " actions  ·  prochaine dans " + Clock(Interlocked.Read(ref nextActionMs))
-                 + (left >= 0 ? "\nArrêt automatique dans " + Clock(left)
-                    : chkAfkIdle.Checked ? "\nLe compte à rebours repart quand tu bouges" : "");
+            return T("Anti-AFK actif — {0} actions  ·  prochaine dans {1}", n, Clock(Interlocked.Read(ref nextActionMs)))
+                 + (left >= 0 ? "\n" + T("Arrêt automatique dans {0}", Clock(left))
+                    : chkAfkIdle.Checked ? "\n" + T("Le compte à rebours repart quand tu bouges") : "");
         }
 
         static string Clock(long ms)
@@ -1153,16 +1742,49 @@ namespace AutoClicker
         {
             base.OnHandleCreated(e);
             Theme.MacWindow(Handle);
-            RegisterHotKey(Handle, HK_TOGGLE, 0, VK_F6);
-            RegisterHotKey(Handle, HK_POS, 0, VK_F7);
+            RegisterHotKeys(true);
             timeBeginPeriod(1);
+        }
+
+        // Raccourcis F6 / F7 / F9 seuls, en permanence. MOD_NOREPEAT : garder la touche enfoncée ne redéclenche pas
+        // le raccourci. Identifiant = raccourci * 16 + modificateurs (MOD_ALT = 1, MOD_CONTROL = 2, MOD_SHIFT = 4).
+        void RegisterHotKeys(bool on)
+        {
+            SetHotKey(HK_TOGGLE, VK_F6, 0, on);
+            SetHotKey(HK_POS, VK_F7, 0, on);
+            SetHotKey(HK_ROUTE, VK_F9, 0, on);
+            if (!on) SetHotKeyVariants(false);
+        }
+
+        // Pendant un lancement ou un enregistrement, F6 et F9 marchent aussi avec Alt / Ctrl / Maj : le trajet
+        // peut garder Maj enfoncé (sprint) et Windows verrait alors "Maj+F6" au lieu de F6. Le reste du temps
+        // on laisse ces combinaisons aux autres applications (Ctrl+F6 dans Word, Alt+F9 de ShadowPlay…).
+        void SetHotKeyVariants(bool on)
+        {
+            if (hotKeyVariants == on) return;
+            hotKeyVariants = on;
+            for (uint mods = 1; mods < 8; mods++)
+            {
+                SetHotKey(HK_TOGGLE, VK_F6, mods, on);
+                SetHotKey(HK_ROUTE, VK_F9, mods, on);
+            }
+        }
+
+        void SetHotKey(int hk, uint vk, uint mods, bool on)
+        {
+            const uint MOD_NOREPEAT = 0x4000;
+            int id = hk * 16 + (int)mods;
+            if (on) RegisterHotKey(Handle, id, mods | MOD_NOREPEAT, vk);
+            else UnregisterHotKey(Handle, id);
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             StopClicking();
-            UnregisterHotKey(Handle, HK_TOGGLE);
-            UnregisterHotKey(Handle, HK_POS);
+            if (worker != null) worker.Join(1000);   // laisse le trajet relâcher ses touches avant de quitter
+            if (recording) SetRawInput(false);
+            RegisterHotKeys(false);
+            Lang.Changed -= OnLangChanged;
             timeEndPeriod(1);
             base.OnFormClosing(e);
         }
@@ -1171,7 +1793,7 @@ namespace AutoClicker
         {
             if (m.Msg == WM_HOTKEY)
             {
-                int id = m.WParam.ToInt32();
+                int id = m.WParam.ToInt32() / 16;
                 if (id == HK_TOGGLE) { if (running) StopClicking(); else StartSelected(0); }
                 else if (id == HK_POS)
                 {
@@ -1180,22 +1802,181 @@ namespace AutoClicker
                     lblPos.Text = "X " + fixedPos.X + "   Y " + fixedPos.Y;
                     lblPos.ForeColor = Theme.Text;
                 }
+                else if (id == HK_ROUTE) ToggleRecording();
             }
+            else if (m.Msg == WM_INPUT && recording) OnRawInput(m.LParam);
             base.WndProc(ref m);
+        }
+
+        // ---------- enregistrement du trajet (F9) ----------
+        // Raw Input en mode "sink" : on reçoit le clavier et les mouvements relatifs de la souris même quand
+        // le jeu est au premier plan (c'est ce que lit le jeu, pas la position du curseur qui reste bloquée au centre).
+        void ToggleRecording()
+        {
+            if (running) return;
+            if (recording) { StopRecording(); return; }
+
+            recRoute = new Route();
+            recDown = new HashSet<int>();
+            recStart = Environment.TickCount;
+            if (!SetRawInput(true))
+            {
+                MessageBox.Show(this, T("Impossible d'écouter le clavier et la souris pour enregistrer le trajet."), AppName);
+                return;
+            }
+            recording = true;
+            SetHotKeyVariants(true);   // F9 doit marcher même en sprintant (Maj enfoncé)
+            segTabs.SelectedIndex = 2;
+            if (chkToast.Checked) toast.ShowToast(T("Enregistrement du trajet  ·  F9 pour finir"), Theme.Red);
+            badge.SetBadgeText(T("Enregistrement du trajet  ·  F9"));
+            if (chkBadge.Checked) badge.ShowBadge();
+            UpdateRouteLabel();
+        }
+
+        void StopRecording()
+        {
+            recording = false;
+            SetRawInput(false);
+            SetHotKeyVariants(false);
+            int end = Environment.TickCount - recStart;
+            badge.Hide();
+
+            // F9 appuyé deux fois de suite par erreur : on garde l'ancien trajet plutôt que de l'écraser
+            bool moved = recRoute.Events.Exists(e => e.Kind != Route.KeyUp);
+            if (end < 1000 || !moved)
+            {
+                if (chkToast.Checked) toast.ShowToast(T("Trajet trop court, ancien trajet conservé"), Theme.Red);
+                UpdateRouteLabel();
+                return;
+            }
+
+            foreach (int k in recDown) recRoute.Events.Add(new Route.Ev(end, Route.KeyUp, k, 0));   // touches encore enfoncées
+            recRoute.Duration = end;
+            route = recRoute;
+            route.Save();
+            chkRoute.Checked = true;
+            if (chkToast.Checked) toast.ShowToast(T("Trajet enregistré  ·  {0}", Clock(end)), Theme.Green);
+            UpdateRouteLabel();
+        }
+
+        bool SetRawInput(bool on)
+        {
+            const uint RIDEV_REMOVE = 0x1, RIDEV_INPUTSINK = 0x100;
+            var d = new RAWINPUTDEVICE[2];
+            d[0].usUsagePage = 1; d[0].usUsage = 2;   // souris
+            d[1].usUsagePage = 1; d[1].usUsage = 6;   // clavier
+            for (int i = 0; i < 2; i++)
+            {
+                d[i].dwFlags = on ? RIDEV_INPUTSINK : RIDEV_REMOVE;
+                d[i].hwndTarget = on ? Handle : IntPtr.Zero;
+            }
+            return RegisterRawInputDevices(d, 2, (uint)Marshal.SizeOf(typeof(RAWINPUTDEVICE)));
+        }
+
+        void OnRawInput(IntPtr hRaw)
+        {
+            const uint RID_INPUT = 0x10000003;
+            uint hdr = (uint)Marshal.SizeOf(typeof(RAWINPUTHEADER)), size = 0;
+            GetRawInputData(hRaw, RID_INPUT, null, ref size, hdr);
+            if (size < hdr) return;
+            var buf = new byte[size];
+            if (GetRawInputData(hRaw, RID_INPUT, buf, ref size, hdr) != size) return;
+
+            uint type = BitConverter.ToUInt32(buf, 0);
+            long device = IntPtr.Size == 8 ? BitConverter.ToInt64(buf, 8) : BitConverter.ToInt32(buf, 8);
+            if (device == 0) return;   // entrée simulée (SendInput) : pas une action du joueur
+            int o = (int)hdr, t = Environment.TickCount - recStart;
+            var ev = recRoute.Events;
+
+            if (type == 0 && size >= o + 20)   // RIM_TYPEMOUSE
+            {
+                ushort flags = BitConverter.ToUInt16(buf, o);
+                if ((flags & 1) != 0) return;   // mouvement absolu (bureau à distance, tablette) : ignoré
+                int dx = BitConverter.ToInt32(buf, o + 12), dy = BitConverter.ToInt32(buf, o + 16);
+                if (dx == 0 && dy == 0) return;   // clics et molette : pas enregistrés (clic gauche = frapper dans GTA)
+                // mouvements regroupés par tranches de 10 ms pour garder un fichier léger
+                int last = ev.Count - 1;
+                if (last >= 0 && ev[last].Kind == Route.Move && ev[last].T / 10 == t / 10)
+                    ev[last] = new Route.Ev(ev[last].T, Route.Move, ev[last].A + dx, ev[last].B + dy);
+                else
+                    ev.Add(new Route.Ev(t, Route.Move, dx, dy));
+            }
+            else if (type == 1 && size >= o + 4)   // RIM_TYPEKEYBOARD
+            {
+                ushort make = BitConverter.ToUInt16(buf, o), kf = BitConverter.ToUInt16(buf, o + 2);
+                if (make == 0 || make == 0xFF) return;
+                int code = make | ((kf & 2) != 0 ? 0xE000 : 0);
+                // F6, F7, F9 (raccourcis du programme) et la touche de récolte ne font pas partie du trajet
+                if (code == 0x40 || code == 0x41 || code == 0x43 || code == HarvestKeys[cbHarvKey.SelectedIndex]) return;
+                if ((kf & 1) != 0) { if (recDown.Remove(code)) ev.Add(new Route.Ev(t, Route.KeyUp, code, 0)); }
+                else if (recDown.Add(code)) ev.Add(new Route.Ev(t, Route.KeyDown, code, 0));   // ignore la répétition auto
+            }
+        }
+
+        void UpdateRouteLabel()
+        {
+            if (recording)
+            {
+                lblRoute.Text = T("enregistrement… {0}  ·  F9", Clock(Environment.TickCount - recStart));
+                lblRoute.ForeColor = Theme.Red;
+            }
+            else if (route == null)
+            {
+                lblRoute.Text = T("aucun  ·  F9 pour enregistrer");
+                lblRoute.ForeColor = Theme.Sub;
+            }
+            else
+            {
+                lblRoute.Text = T("{0}  ·  F9 pour refaire", Clock(route.Duration));
+                lblRoute.ForeColor = Theme.Text;
+            }
         }
 
         void StartSelected(int startDelayMs)
         {
-            if (running) return;
+            if (running || recording) return;
+            // F6 deux fois très vite : on attend que l'ancien lancement soit vraiment fini,
+            // sinon il continuerait à tourner (et à appuyer sur des touches) à côté du nouveau
+            if (worker != null && worker.IsAlive && !worker.Join(500))
+            {
+                SetStatus("Arrêt en cours… réessaie dans un instant");
+                return;
+            }
             if (segTabs.SelectedIndex == 1) StartAfk(startDelayMs);
+            else if (segTabs.SelectedIndex == 2) StartHarvest(startDelayMs);
             else StartClicking(startDelayMs);
+        }
+
+        void StartHarvest(int startDelayMs)
+        {
+            int key = HarvestKeys[cbHarvKey.SelectedIndex];
+            long waitMs = (long)numHarvWait.Value * (cbHarvUnit.SelectedIndex == 1 ? 1000 : 1);
+            int minPx = HarvestThresholds[segHarvSens.SelectedIndex];
+            if (chkRoute.Checked && route == null)
+            {
+                MessageBox.Show(this, T("Enregistre d'abord un trajet : en jeu, appuie sur F9, fais le tour du champ, puis F9 à nouveau."), AppName);
+                return;
+            }
+            Route r = chkRoute.Checked ? route : null;
+
+            BeginRun(2, startDelayMs);
+            promptSeen = false;
+            harvestRoute = r != null;
+            laps = 0;
+            // la fenêtre est toujours au premier plan : elle ne doit pas cacher le message à détecter
+            if (previewDetector == null) previewDetector = new PromptDetector { Exclude = VisibleBounds };
+            if (Bounds.IntersectsWith(previewDetector.Zone)) WindowState = FormWindowState.Minimized;
+
+            worker = new Thread(delegate () { HarvestLoop(key, waitMs, minPx, r, startDelayMs); });
+            worker.IsBackground = true;
+            worker.Start();
         }
 
         void StartClicking(int startDelayMs)
         {
             if (segPos.SelectedIndex == 1 && fixedPos == Point.Empty)
             {
-                MessageBox.Show(this, "Place la souris puis appuie sur F7 pour enregistrer le point fixe.", AppName);
+                MessageBox.Show(this, T("Place la souris puis appuie sur F7 pour enregistrer le point fixe."), AppName);
                 return;
             }
 
@@ -1213,7 +1994,7 @@ namespace AutoClicker
             bool useFixed = segPos.SelectedIndex == 1;
             Point pos = fixedPos;
 
-            BeginRun(false, startDelayMs);
+            BeginRun(0, startDelayMs);
             worker = new Thread(delegate () { ClickLoop(ms, btn, dbl, max, useFixed, pos, startDelayMs); });
             worker.IsBackground = true;
             worker.Priority = ThreadPriority.AboveNormal;
@@ -1227,7 +2008,7 @@ namespace AutoClicker
             List<int> keys = kb.Selected;
             if (action == ACT_KEYBOARD && keys.Count == 0)
             {
-                MessageBox.Show(this, "Choisis au moins une touche sur le clavier.", AppName);
+                MessageBox.Show(this, T("Choisis au moins une touche sur le clavier."), AppName);
                 return;
             }
             long[] mult = { 1, 1000, 60000 };   // millisecondes, secondes, minutes
@@ -1236,7 +2017,7 @@ namespace AutoClicker
             bool onlyIdle = chkAfkIdle.Checked;
             long stopAfterMs = cbAfkStop.SelectedIndex == 0 ? 0 : (long)numAfkStop.Value * (cbAfkStop.SelectedIndex == 1 ? 60000 : 3600000);
 
-            BeginRun(true, startDelayMs);
+            BeginRun(1, startDelayMs);
             Interlocked.Exchange(ref nextActionMs, ms);
             Interlocked.Exchange(ref stopLeftMs, stopAfterMs > 0 ? stopAfterMs : -1);
             worker = new Thread(delegate () { AfkLoop(ms, action, keys, holdMs, gapMs, onlyIdle, stopAfterMs, startDelayMs); });
@@ -1244,21 +2025,21 @@ namespace AutoClicker
             worker.Start();
         }
 
-        void BeginRun(bool afk, int startDelayMs)
+        void BeginRun(int mode, int startDelayMs)
         {
-            afkMode = afk;
+            runMode = mode;
             clicks = 0;
             stopEvent.Reset();
+            SetHotKeyVariants(true);   // F6 doit pouvoir arrêter même si le trajet garde Maj enfoncé
             running = true;
             uiRunning = true;
-            btnStart.Text = "Arrêter   (F6)";
+            btnStart.Text = T("Arrêter   (F6)");
             btnStart.Fill = Theme.Red;
             UpdateLocks();
-            if (startDelayMs > 0) lblStatus.Text = "Démarrage dans " + (startDelayMs / 1000) + " s…";
+            if (startDelayMs > 0) lblStatus.Text = T("Démarrage dans {0} s…", startDelayMs / 1000);
 
-            string mode = afk ? "Anti-AFK" : "AutoClicker";
-            if (chkToast.Checked) toast.ShowToast(mode + " activé", Theme.Green);
-            badge.SetBadgeText(mode + " actif  ·  F6");
+            if (chkToast.Checked) toast.ShowToast(T(ModeOn[mode]), Theme.Green);
+            badge.SetBadgeText(T(ModeBadge[mode]));
             if (chkBadge.Checked) badge.ShowBadge();
         }
 
@@ -1273,13 +2054,14 @@ namespace AutoClicker
         void ResetUi()
         {
             uiRunning = false;
-            btnStart.Text = "Démarrer   (F6)";
+            if (!recording) SetHotKeyVariants(false);
+            btnStart.Text = T("Démarrer   (F6)");
             btnStart.Fill = Theme.Accent;
             UpdateLocks();
-            lblStatus.Text = "Arrêté — " + Interlocked.Read(ref clicks) + (afkMode ? " actions effectuées" : " clics effectués");
+            SetStatus(ModeStopped[runMode], Interlocked.Read(ref clicks));
 
             badge.Hide();
-            if (chkToast.Checked) toast.ShowToast((afkMode ? "Anti-AFK" : "AutoClicker") + " désactivé", Theme.Red);
+            if (chkToast.Checked) toast.ShowToast(T(ModeOff[runMode]), Theme.Red);
         }
 
         // Verrouille les réglages pendant que ça tourne, et grise les champs inutiles
@@ -1289,6 +2071,7 @@ namespace AutoClicker
             segTabs.Locked = run;
             LockAll(pnlClick, run);
             LockAll(pnlAfk, run);
+            LockAll(pnlHarvest, run);
             numInterval.Locked = run || segMode.SelectedIndex == 1;
             cbUnit.Locked = run || segMode.SelectedIndex == 1;
             numCount.Locked = run || segRepeat.SelectedIndex == 0;
@@ -1361,6 +2144,105 @@ namespace AutoClicker
                 if (stopEvent.WaitOne(250)) break;
             }
             running = false;
+        }
+
+        // Récolte : appuie sur la touche quand le message apparaît. Avec un trajet, le perso le refait en boucle
+        // et s'arrête le temps de ramasser ; le trajet reprend ensuite là où il en était.
+        void HarvestLoop(int key, long waitMs, int minPx, Route route, int startDelayMs)
+        {
+            if (startDelayMs > 0 && stopEvent.WaitOne(startDelayMs)) return;
+
+            var held = new HashSet<int>();   // touches du trajet actuellement enfoncées
+            int start = Environment.TickCount;
+            System.IO.StreamWriter log = null;
+            try
+            {
+                // journal de diagnostic, réécrit à chaque lancement : ce que le détecteur voit, quand on appuie, etc.
+                System.IO.Directory.CreateDirectory(Route.DataDir);
+                log = new System.IO.StreamWriter(System.IO.Path.Combine(Route.DataDir, "recolte.log"), false) { AutoFlush = true };
+                log.WriteLine("début  trajet=" + (route != null ? route.Duration + " ms, " + route.Events.Count + " événements" : "non")
+                            + "  seuil=" + minPx + "  pause=" + waitMs + " ms");
+            }
+            catch { log = null; }
+            Action<string> Log = s => { if (log != null) try { log.WriteLine((Environment.TickCount - start).ToString().PadLeft(7) + " ms  " + s); } catch { } };
+
+            using (var det = new PromptDetector { Exclude = VisibleBounds })
+            {
+                int seen = 0, idx = 0;
+                int t0 = Environment.TickCount;   // début du tour en cours, décalé de la durée des pauses de récolte
+                int nextCheck = t0;
+                while (running)
+                {
+                    int now = Environment.TickCount;
+                    if (route != null)
+                    {
+                        int t = now - t0;
+                        while (idx < route.Events.Count && route.Events[idx].T <= t) PlayEvent(route.Events[idx++], held);
+                        if (idx >= route.Events.Count && t >= route.Duration)
+                        {
+                            ReleaseAll(held);   // fin du tour : on repart du début
+                            idx = 0;
+                            t0 = now;
+                            Interlocked.Increment(ref laps);
+                            Log("fin du tour " + laps);
+                        }
+                    }
+
+                    // sans trajet on vérifie à chaque tour de boucle (toutes les 120 ms) ; avec trajet toutes les 50 ms,
+                    // car en passant à côté d'un champignon le message ne reste affiché qu'un court instant
+                    if (route == null || now - nextCheck >= 0)
+                    {
+                        nextCheck = now + 50;
+                        int px = det.Count();
+                        bool vis = px >= minPx;
+                        if (px > 0) Log("vu " + px + " px" + (vis ? "" : " (sous le seuil)"));
+                        promptSeen = vis;
+                        seen = vis ? seen + 1 : 0;
+
+                        // vu 2 fois de suite : on évite de réagir à une image isolée
+                        if (seen >= 2)
+                        {
+                            seen = 0;
+                            int pauseStart = Environment.TickCount;
+                            var resume = new List<int>(held);
+                            ReleaseAll(held);                 // le perso s'arrête pour ramasser
+                            if (route != null)
+                            {
+                                // laisse le perso s'arrêter : en appuyant pendant qu'il glisse encore, il dépasse le champignon
+                                if (Wait(300)) break;
+                                Log("arrêté, encore visible : " + det.Count() + " px");
+                            }
+                            PressKey(key, 80);
+                            Log("appui sur la touche de récolte");
+                            Interlocked.Increment(ref clicks);
+                            if (Wait(waitMs)) break;          // laisse l'animation de ramassage se finir
+                            foreach (int k in resume) { SendKey(k, false); held.Add(k); }
+                            int paused = Environment.TickCount - pauseStart;
+                            t0 += paused;
+                            nextCheck += paused;
+                            continue;
+                        }
+                    }
+                    if (stopEvent.WaitOne(route != null ? 2 : 120)) break;
+                }
+            }
+            ReleaseAll(held);   // jamais de touche laissée enfoncée dans le jeu
+            Log("arrêt  " + Interlocked.Read(ref clicks) + " récoltes");
+            if (log != null) log.Dispose();
+            running = false;
+        }
+
+        static void PlayEvent(Route.Ev e, HashSet<int> held)
+        {
+            if (e.Kind == Route.Move) MoveRel(e.A, e.B);
+            else if (e.Kind == Route.KeyDown) { SendKey(e.A, false); held.Add(e.A); }
+            else { SendKey(e.A, true); held.Remove(e.A); }
+        }
+
+        static void ReleaseAll(HashSet<int> held)
+        {
+            foreach (int k in held) SendKey(k, true);
+            held.Clear();
         }
 
         // Attend intervalMs ; renvoie true si on a demandé l'arrêt

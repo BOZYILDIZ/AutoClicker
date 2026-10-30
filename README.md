@@ -22,6 +22,19 @@ Autoclicker et anti-AFK pour Windows, avec une interface sombre inspirée de mac
 - Choix du clavier : AZERTY, QWERTY, QWERTZ (détecté automatiquement)
 - Option « seulement si je suis inactif » : se met en pause tout seul quand tu joues
 
+**Récolte (FiveM)**
+- Appuie sur E (ou F, G, H, X, Espace) dès que le message de récolte apparaît au centre de l'écran
+  (détection du cadre vert menthe du message, réglée pour le serveur testé)
+- Pause réglable après chaque récolte, sensibilité basse / normale / haute
+- Voyant en direct « détecté / pas visible » pour tester avant de lancer
+- **Trajet enregistré** : **F9** pour enregistrer un tour du champ (touches + mouvements de souris),
+  puis le perso le refait en boucle et s'arrête pour ramasser
+- Le jeu doit être en « fenêtré sans bordure »
+
+**Langues**
+- Français (par défaut), anglais et turc : clique sur un drapeau en haut à droite
+- Toute l'interface change de langue tout de suite, le choix est mémorisé
+
 **Overlay en jeu**
 - Notification à l'écran quand le programme s'active ou se désactive
 - Indicateur permanent en haut à droite tant qu'il tourne
@@ -32,6 +45,7 @@ Autoclicker et anti-AFK pour Windows, avec une interface sombre inspirée de mac
 |--------|--------|
 | **F6** | Démarrer / arrêter |
 | **F7** | Enregistrer le point fixe (position de la souris) |
+| **F9** | Récolte : commencer / finir l'enregistrement du trajet |
 
 ## Utilisation
 
